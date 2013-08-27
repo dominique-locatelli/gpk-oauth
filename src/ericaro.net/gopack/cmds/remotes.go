@@ -3,11 +3,12 @@ package cmds
 import (
 	"bytes"
 	. "ericaro.net/gopack"
+	"ericaro.net/gopack/oauth"
 	"ericaro.net/gopack/protocol"
 	"ericaro.net/gopack/semver"
 	"fmt"
-	"net/url"
 	"log"
+	"net/url"
 )
 
 func init() {
@@ -117,22 +118,22 @@ var Push = Command{
 		}
 
 		// read it in memory (tar.gz)
-		
+
 		buf := new(bytes.Buffer)
 		pkg.Pack(buf) // pack either exec or src
 		// and finally push the buffer
 		log.Printf("pushing sources\n")
 		err = remote.Push(pid, buf) // either exec or src
-		
+
 		if *pushExecutables {
 			log.Printf("pushing executables")
 			buf := new(bytes.Buffer)
 			pkg.PackExecutables(buf) // pack both exec or src
-			
+
 			// and finally push the buffer
 			err = remote.PushExecutables(pid, buf) // either exec or src		
 		}
-		
+
 		if err != nil {
 			ErrorStyle.Printf("Error from the remote while pushing.\n    \u21b3 %s\n", err)
 			// TODO as soon as I've got some search capability display similar results
@@ -142,7 +143,6 @@ var Push = Command{
 		return
 	},
 }
-
 
 //var Get = Command{
 //	Name:           `goget`,
@@ -156,57 +156,101 @@ var Push = Command{
 
 ////////////////////////////////////////////////////////////////////////////////////////
 
+var oauthFlag *bool     // OAuth flag value
+var base64Token *string // Simple token value
+
 var AddRemote = Command{
 	Name:      `radd`,
 	Alias:     `r+`,
 	Category:  RemoteCategory,
-	UsageLine: `NAME URL [TOKEN]`,
+	UsageLine: `NAME URL`,
 	Short:     `Add a remote server.`,
 	Long: `Remote server can be used to publish or receive other's code.
        NAME    local alias for this remote
        URL     full URL to the remote server.
-               file:// and http:// are actually supported. For http, see 'gpk serve'
-       TOKEN   option: a secret TOKEN identification provided by the server to deliver authentication.
-               See with your server provider`,
+               file:// and http:// are actually supported. For http, see 'gpk serve'`,
 	RequireProject: false,
+	FlagInit: func(AddRemote *Command) {
+		oauthFlag = AddRemote.Flag.Bool("o", false, "OAuth, when the remote must be accessed using OAuth 1.0 authentification.")
+		base64Token = AddRemote.Flag.String("b", "", "Base64 token, when the remote must be accessed using a base64 token")
+	},
 	Run: func(AddRemote *Command) (err error) {
 
-		if len(AddRemote.Flag.Args()) < 2 || len(AddRemote.Flag.Args()) > 3 {
+		// Check arguments:
+		if len(AddRemote.Flag.Args()) != 2 {
 			ErrorStyle.Printf("Illegal arguments count\n")
 			return
 		}
 
-		name, remote := AddRemote.Flag.Arg(0), AddRemote.Flag.Arg(1)
-		u, err := url.Parse(remote)
-		if err != nil {
-			ErrorStyle.Printf("Invalid URL passed as a remote Repository.\n    \u21b3 %s\n", err)
+		if len(*base64Token) > 0 && *oauthFlag {
+			ErrorStyle.Printf("Illegal arguments combinaison, -o and -b options can't be used together.\n")
 			return
 		}
-		// TOKEN handling
+
+		// Retrieve NAME & URL values:
+		name, remote := AddRemote.Flag.Arg(0), AddRemote.Flag.Arg(1)
+
 		var token *protocol.Token // nil by default
-		if len(AddRemote.Flag.Args()) == 3 {
-			token, err = protocol.ParseStdToken(AddRemote.Flag.Arg(2))
+		// Handling Base64 token:
+		if len(*base64Token) > 0 {
+			// When -b flag:
+			token, err = protocol.ParseStdToken(*base64Token)
 			if err != nil {
 				ErrorStyle.Printf("Invalid token syntax, please enter a valid token base64- RFC 4648 Encoded array of bytes.\n")
 				return
 			}
 		}
 
+		// Handling OAuth token:
+		if *oauthFlag {
+			// When -o option, the method RequestOAuthToken() start a procedure to request
+			// an OAuth token:
+			token, err = oauth.RequestOAuthToken(name, remote)
+			if err != nil {
+				ErrorStyle.Printf("Failed to request OAuth token.\n    \u21b3 %s\n", err)
+				return
+			}
+
+			// Hack to force the creation of an OAuth client:
+			remote = "oauth:" + remote
+		}
+
+		// Verifying that the remote is valid URL:
+		u, err := url.Parse(remote)
+		if err != nil {
+			ErrorStyle.Printf("Invalid URL passed as a remote Repository.\n    \u21b3 %s\n", err)
+			return
+		}
+		if u.String() == "" {
+			ErrorStyle.Printf("Invalid URL passed as a remote Repository.\n    \u21b3 %s\n", remote)
+			return
+		}
+
+		// Instantiate a remote client:
 		client, err := protocol.NewClient(name, *u, token)
 		if err != nil {
 			ErrorStyle.Printf("Failed to create the a client for this remote:\n    \u21b3 %s\n", err)
+			return
 		}
-		stoken := ""
-		if token != nil {
-			stoken = fmt.Sprintf("%s", token)
+		if client == nil {
+			ErrorStyle.Printf("Failed to create the a client for this remote:\n    \u21b3 %s\n", remote)
+			return
 		}
+
+		// Update configuration:
 		err = AddRemote.Repository.RemoteAdd(client)
 		if err != nil {
 			ErrorStyle.Printf("%s\n", err)
 			return
 		}
-		SuccessStyle.Printf("       +%s %s %s\n", name, u, stoken)
 		AddRemote.Repository.Write()
+
+		// Display a success trace
+		stoken := ""
+		if token != nil {
+			stoken = fmt.Sprintf("%s", token)
+		}
+		SuccessStyle.Printf("       +%s %s %s\n", name, u, stoken)
 		return
 	},
 }

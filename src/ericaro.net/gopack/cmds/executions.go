@@ -115,8 +115,8 @@ var Test = Command{
 	Short:          `Run go test`,
 	Long:           `Run go test on the whole project.`, // TODO add options to select the package to be executed
 	RequireProject: true,
-	FlagInit: func(Compile *Command) {
-		testWatchFlag = Compile.Flag.Duration("w", 0, "watch. Repeat the command for ever every watched seconds")
+	FlagInit: func(Test *Command) {
+		testWatchFlag = Test.Flag.Duration("w", 0, "watch. Repeat the command for ever every watched seconds")
 	},
 	Run: func(Test *Command) (err error) {
 
